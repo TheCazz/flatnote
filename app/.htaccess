@@ -1,0 +1,3 @@
+<FilesMatch "^(config|functions|settings|version)\.php$">
+    Require all denied
+</FilesMatch>
