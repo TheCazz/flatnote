@@ -5,7 +5,7 @@ FlatNote is a simple, self-hosted Markdown note app built for speed and simplici
 ## Requirements
 - A web server with PHP 8.0 or newer
 - Write access for `db/`
-- Write access to `app/` during first setup so `app/settings.php` can be created
+- Write access to app/ during first setup so app/settings.php can be created. After setup, only app/settings.php and app/runtime/ need to remain writable.
 
 ## Installation
 1. Download the release ZIP.
