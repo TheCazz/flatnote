@@ -37,9 +37,26 @@ function defaultSettings(): array
     ];
 }
 
+function ensureSettingsFile(): bool
+{
+    if (is_file(SETTINGS_FILE)) return true;
+
+    $exampleFile = DATA_DIR . '/settings.example.php';
+    if (!is_file($exampleFile)) return false;
+
+    if (!is_dir(DATA_DIR) && !@mkdir(DATA_DIR, 0775, true)) return false;
+
+    return @copy($exampleFile, SETTINGS_FILE);
+}
+
 function loadSettings(): array
 {
     $defaults = defaultSettings();
+
+    if (!is_file(SETTINGS_FILE)) {
+        ensureSettingsFile();
+    }
+
     if (!is_file(SETTINGS_FILE)) return $defaults;
 
     $settings = require SETTINGS_FILE;

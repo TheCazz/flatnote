@@ -2,6 +2,10 @@
 require_once __DIR__ . '/app/functions.php';
 startAppSession();
 
+if (!is_dir(DATA_DIR)) @mkdir(DATA_DIR, 0775, true);
+if (!is_dir(DB_DIR)) @mkdir(DB_DIR, 0775, true);
+if (!is_dir(RUNTIME_DIR)) @mkdir(RUNTIME_DIR, 0775, true);
+
 $settings = loadSettings();
 
 $requestedLanguage = (string)($_GET['lang'] ?? '');
@@ -16,7 +20,9 @@ $lang = loadLanguage($activeLanguage);
 $error = '';
 $message = '';
 
+if (!is_dir(DATA_DIR)) @mkdir(DATA_DIR, 0775, true);
 if (!is_dir(DB_DIR)) @mkdir(DB_DIR, 0775, true);
+if (!is_dir(RUNTIME_DIR)) @mkdir(RUNTIME_DIR, 0775, true);
 
 // Direktlänk: logga in och ta bort nyckeln ur adressfältet.
 if (isset($_GET['key']) && isInstalled()) {
@@ -44,7 +50,7 @@ if (!isInstalled() && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action']
         $error = t('password_min');
     } elseif ($password !== $password2) {
         $error = t('password_mismatch');
-    } elseif (!is_writable(APP_DIR) && !is_writable(SETTINGS_FILE)) {
+    } elseif (!is_writable(DATA_DIR)) {
         $error = t('app_not_writable');
     } else {
         $settings['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
@@ -110,6 +116,10 @@ if (!isInstalled() || !isLoggedIn()) {
 <html lang="<?= h($activeLanguage) ?>"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title><?= h(APP_NAME) ?></title><link rel="stylesheet" href="app/css/style.css">
+<link rel="icon" href="app/icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="app/icons/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="app/icons/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="app/icons/apple-touch-icon">
 </head><body class="auth-body">
 <div class="auth-card">
     <h1><?= h(APP_NAME) ?></h1>
@@ -151,7 +161,7 @@ if (!isInstalled() || !isLoggedIn()) {
     <?php endif; ?>
     <div class="auth-version">v<?= h(APP_VERSION) ?></div>
 </div>
-<script src="app/js/app.js"></script>
+<script src="app/js/app.js?v=<?= rawurlencode(APP_VERSION) ?>"></script>
 </body></html><?php
     exit;
 }
@@ -253,6 +263,10 @@ if (isset($_GET['deleted'])) $message = t('deleted');
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title><?= h(APP_NAME) ?><?= $current ? ' – ' . h($current['title']) : '' ?></title>
 <link rel="stylesheet" href="app/css/style.css">
+<link rel="icon" href="app/icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="app/icons/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="app/icons/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="app/icons/apple-touch-icon">
 </head>
 <body>
 <div class="app">
@@ -260,15 +274,15 @@ if (isset($_GET['deleted'])) $message = t('deleted');
     <div class="brand"><button class="menu-toggle" id="menuToggle" aria-label="Öppna meny">☰</button><span><?= h(APP_NAME) ?></span></div>
     <div class="top-actions desktop-actions">
         <a class="btn primary" href="?action=new"><?= h(t('new_page')) ?></a>
-        <a class="btn" href="?action=settings"><?= h(t('settings')) ?></a>
-        <a class="btn" href="?logout=1"><?= h(t('logout')) ?></a>
+        <a class="btn primary" href="?action=settings"><?= h(t('settings')) ?></a>
+        <a class="btn danger" href="?logout=1"><?= h(t('logout')) ?></a>
     </div>
     <div class="mobile-actions">
         <a class="btn primary mobile-new" href="?action=new" title="Ny sida">+</a>
         <button class="btn mobile-more" id="mobileMore" title="Fler alternativ">⋮</button>
         <div class="mobile-menu" id="mobileMenu">
-            <a href="?action=settings"><?= h(t('settings')) ?></a>
-            <a href="?logout=1"><?= h(t('logout')) ?></a>
+            <a class="mobile-primary" href="?action=settings"><?= h(t('settings')) ?></a>
+            <a class="mobile-danger" href="?logout=1"><?= h(t('logout')) ?></a>
         </div>
     </div>
 </header>
@@ -313,7 +327,7 @@ if (isset($_GET['deleted'])) $message = t('deleted');
             <div class="note-category"><?= h(t('security')) ?></div>
             <h1 class="note-title"><?= h(t('login_activity')) ?></h1>
         </div>
-        <a class="btn" href="?action=settings">← <?= h(t('back_to_settings')) ?></a>
+        <a class="btn primary" href="?action=settings">← <?= h(t('back_to_settings')) ?></a>
     </div>
     <section class="note-card">
         <p class="help"><?= h(t('login_activity_retention')) ?></p>
@@ -370,10 +384,10 @@ if (isset($_GET['deleted'])) $message = t('deleted');
                 <button class="btn primary" type="submit"><?= h(t('save')) ?></button>
             </form>
             <?php if (!empty($settings['direct_link_enabled'])): ?>
-                <div class="copy-row"><input id="directLink" readonly value="<?= h(directLink($settings['direct_key'])) ?>"><button class="btn" type="button" id="copyDirectLink"><?= h(t('copy')) ?></button></div>
+                <div class="copy-row"><input id="directLink" readonly value="<?= h(directLink($settings['direct_key'])) ?>"><button class="btn primary" type="button" id="copyDirectLink"><?= h(t('copy')) ?></button></div>
                 <form method="post" onsubmit="return confirm(<?= h(json_encode(t('old_key_warning'), JSON_UNESCAPED_UNICODE)) ?>);">
                     <input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>"><input type="hidden" name="action" value="new_direct_key">
-                    <button class="btn" type="submit"><?= h(t('new_direct_key')) ?></button>
+                    <button class="btn primary" type="submit"><?= h(t('new_direct_key')) ?></button>
                 </form>
             <?php else: ?>
                 <p class="help"><?= h(t('direct_link_disabled')) ?></p>
@@ -461,10 +475,11 @@ if (isset($_GET['deleted'])) $message = t('deleted');
             <button class="tool" type="button" data-wrap="~~" title="<?= h(t('strike')) ?>"><s>S</s></button>
             <button class="tool" type="button" data-prefix="- " title="<?= h(t('bullet_list')) ?>">•</button>
             <button class="tool" type="button" data-prefix="- [ ] " title="<?= h(t('checklist')) ?>">☑</button>
+            <button class="tool" type="button" id="insertTableBtn" title="<?= h(t('table')) ?>">▦</button>
         </div>
         <textarea name="body" id="editorText" placeholder="<?= h(t('start_writing')) ?>"><?= h($editBody) ?></textarea>
         <div class="editor-actions">
-            <a class="btn" id="cancelEdit" href="<?= $editPage ? '?page='.rawurlencode($editPage['filename']) : '?' ?>"><?= h(t('cancel')) ?></a>
+            <a class="btn danger" id="cancelEdit" href="<?= $editPage ? '?page='.rawurlencode($editPage['filename']) : '?' ?>"><?= h(t('cancel')) ?></a>
             <button class="btn primary" type="submit"><?= h(t('save')) ?></button>
         </div>
     </form>
@@ -485,7 +500,7 @@ if (isset($_GET['deleted'])) $message = t('deleted');
 <div class="scrim" id="scrim"></div>
 
 
-<?php if ($current): ?><div class="modal" id="deleteModal" aria-hidden="true"><div class="modal-card"><h2><?= h(t('delete_page')) ?></h2><p><?= h(t('delete_named')) ?> <strong><?= h($current['title']) ?></strong>? <?= h(t('cannot_undo')) ?></p><form method="post"><input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>"><input type="hidden" name="action" value="delete_page"><input type="hidden" name="filename" value="<?= h($current['filename']) ?>"><div class="modal-actions"><button class="btn" type="button" data-modal-close><?= h(t('cancel')) ?></button><button class="btn danger" type="submit"><?= h(t('delete')) ?></button></div></form></div></div><?php endif; ?>
+<?php if ($current): ?><div class="modal" id="deleteModal" aria-hidden="true"><div class="modal-card"><h2><?= h(t('delete_page')) ?></h2><p><?= h(t('delete_named')) ?> <strong><?= h($current['title']) ?></strong>? <?= h(t('cannot_undo')) ?></p><form method="post"><input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>"><input type="hidden" name="action" value="delete_page"><input type="hidden" name="filename" value="<?= h($current['filename']) ?>"><div class="modal-actions"><button class="btn danger" type="button" data-modal-close><?= h(t('cancel')) ?></button><button class="btn danger" type="submit"><?= h(t('delete')) ?></button></div></form></div></div><?php endif; ?>
 
-<script src="app/js/app.js"></script>
+<script src="app/js/app.js?v=<?= rawurlencode(APP_VERSION) ?>"></script>
 </body></html>

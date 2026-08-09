@@ -65,6 +65,32 @@
         return false;
     };
 
+    document.getElementById('insertTableBtn')?.addEventListener('click', () => {
+        if (!editor) return;
+
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        const value = editor.value;
+
+        const table =
+            '| Column 1 | Column 2 | Column 3 |\n' +
+            '|----------|----------|----------|\n' +
+            '|          |          |          |';
+
+        const before = value.slice(0, start);
+        const after = value.slice(end);
+        const leadingNewline = before !== '' && !before.endsWith('\n') ? '\n' : '';
+        const trailingNewline = after !== '' && !after.startsWith('\n') ? '\n' : '';
+        const inserted = leadingNewline + table + trailingNewline;
+
+        editor.value = before + inserted + after;
+        editor.focus();
+
+        const firstCellStart = start + leadingNewline.length + 2;
+        editor.setSelectionRange(firstCellStart, firstCellStart + 8);
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
     document.querySelectorAll('.tool').forEach(button => button.addEventListener('click', () => {
         if (!editor) return;
         const start = editor.selectionStart;

@@ -1,7 +1,12 @@
-app/settings.php
-db/*.md
-!db/.gitkeep
+# FlatNote installation data
+data/settings.php
 
-# Runtime login protection state
-app/runtime/*.json
-!app/runtime/.gitkeep
+# Notes
+data/db/*.md
+!data/db/.gitkeep
+!data/db/.htaccess
+
+# Runtime login state and activity
+data/runtime/*.json
+!data/runtime/.gitkeep
+!data/runtime/.htaccess
