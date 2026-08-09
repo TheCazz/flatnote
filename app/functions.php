@@ -23,11 +23,27 @@ function h(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function defaultSettings(): array
+{
+    return [
+        'password_hash' => '',
+        'direct_key' => '',
+        'direct_link_enabled' => true,
+        'language' => 'en',
+        'username' => '',
+        'login_protection_enabled' => true,
+        'login_max_attempts' => 5,
+        'login_cooldown_minutes' => 1,
+    ];
+}
+
 function loadSettings(): array
 {
-    if (!is_file(SETTINGS_FILE)) return ['password_hash' => '', 'direct_key' => '', 'language' => 'en'];
+    $defaults = defaultSettings();
+    if (!is_file(SETTINGS_FILE)) return $defaults;
+
     $settings = require SETTINGS_FILE;
-    return is_array($settings) ? array_merge(['password_hash' => '', 'direct_key' => '', 'language' => 'en'], $settings) : ['password_hash' => '', 'direct_key' => '', 'language' => 'en'];
+    return is_array($settings) ? array_merge($defaults, $settings) : $defaults;
 }
 
 
@@ -61,18 +77,24 @@ function t(string $key): string
 
 function saveSettings(array $settings): bool
 {
+    $defaults = defaultSettings();
+    $settings = array_merge($defaults, $settings);
+
     $content = "<?php
 return " . var_export([
-        'password_hash' => (string)($settings['password_hash'] ?? ''),
-        'direct_key' => (string)($settings['direct_key'] ?? ''),
-        'language' => (string)($settings['language'] ?? 'en'),
+        'password_hash' => (string)$settings['password_hash'],
+        'direct_key' => (string)$settings['direct_key'],
+        'direct_link_enabled' => (bool)$settings['direct_link_enabled'],
+        'language' => (string)$settings['language'],
+        'username' => (string)$settings['username'],
+        'login_protection_enabled' => (bool)$settings['login_protection_enabled'],
+        'login_max_attempts' => max(1, min(20, (int)$settings['login_max_attempts'])),
+        'login_cooldown_minutes' => max(1, min(60, (int)$settings['login_cooldown_minutes'])),
     ], true) . ";
 ";
 
     $saved = file_put_contents(SETTINGS_FILE, $content, LOCK_EX) !== false;
 
-    // settings.php skrivs om under drift. Om OPcache används måste den gamla
-    // kompilerade versionen ogiltigförklaras direkt.
     if ($saved && function_exists('opcache_invalidate')) {
         @opcache_invalidate(SETTINGS_FILE, true);
     }
@@ -86,7 +108,7 @@ function isInstalled(): bool
     return loadSettings()['password_hash'] !== '';
 }
 
-function randomDirectKey(int $length = 15): string
+function randomDirectKey(int $length = 32): string
 {
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
     $out = '';
@@ -105,8 +127,175 @@ function requireCsrf(): void
 {
     if (!hash_equals($_SESSION['csrf'] ?? '', $_POST['csrf'] ?? '')) {
         http_response_code(400);
-        exit('Ogiltig begäran. Ladda om sidan och försök igen.');
+        exit(t('invalid_request'));
     }
+}
+
+
+function clientIp(): string
+{
+    // Säkerhetsräknaren använder alltid den faktiska anslutningsadressen.
+    return (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+}
+
+function visitorIp(): string
+{
+    // För loggning försöker vi även hitta klientadressen bakom en reverse proxy.
+    // Säkerhetsräknaren använder fortfarande clientIp()/REMOTE_ADDR och påverkas
+    // därför inte av förfalskade proxyheaders.
+    $candidates = [];
+
+    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+        $candidates[] = trim((string)$_SERVER['HTTP_CF_CONNECTING_IP']);
+    }
+
+    if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
+        $candidates[] = trim((string)$_SERVER['HTTP_X_REAL_IP']);
+    }
+
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        foreach (explode(',', (string)$_SERVER['HTTP_X_FORWARDED_FOR']) as $forwardedIp) {
+            $candidates[] = trim($forwardedIp);
+        }
+    }
+
+    foreach ($candidates as $candidate) {
+        if (filter_var($candidate, FILTER_VALIDATE_IP)) {
+            return $candidate;
+        }
+    }
+
+    return clientIp();
+}
+
+function ensureRuntimeDir(): bool
+{
+    if (is_dir(RUNTIME_DIR)) return is_writable(RUNTIME_DIR);
+    return @mkdir(RUNTIME_DIR, 0775, true);
+}
+
+function loadJsonFile(string $file): array
+{
+    if (!is_file($file)) return [];
+    $raw = @file_get_contents($file);
+    if ($raw === false || trim($raw) === '') return [];
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : [];
+}
+
+function saveJsonFile(string $file, array $data): bool
+{
+    if (!ensureRuntimeDir()) return false;
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($json === false) return false;
+    return file_put_contents($file, $json . "\n", LOCK_EX) !== false;
+}
+
+function loadLoginState(): array
+{
+    return loadJsonFile(LOGIN_STATE_FILE);
+}
+
+function saveLoginState(array $state): bool
+{
+    return saveJsonFile(LOGIN_STATE_FILE, $state);
+}
+
+function cleanupLoginState(array $state, ?int $now = null): array
+{
+    $now ??= time();
+    $cutoff = $now - 86400;
+    foreach ($state as $ip => $entry) {
+        $lastFailed = (int)($entry['last_failed'] ?? 0);
+        $lockedUntil = (int)($entry['locked_until'] ?? 0);
+        if ($lastFailed < $cutoff && $lockedUntil <= $now) unset($state[$ip]);
+    }
+    return $state;
+}
+
+function loginCooldownRemaining(array $settings, ?string $ip = null): int
+{
+    if (empty($settings['login_protection_enabled'])) return 0;
+    $ip ??= clientIp();
+    $now = time();
+    $state = cleanupLoginState(loadLoginState(), $now);
+    saveLoginState($state);
+    return max(0, (int)($state[$ip]['locked_until'] ?? 0) - $now);
+}
+
+function recordFailedLogin(array $settings, ?string $ip = null): array
+{
+    $maxAttempts = max(1, min(20, (int)($settings['login_max_attempts'] ?? 5)));
+    if (empty($settings['login_protection_enabled'])) {
+        return ['remaining' => $maxAttempts, 'cooldown' => 0];
+    }
+
+    $ip ??= clientIp();
+    $now = time();
+    $state = cleanupLoginState(loadLoginState(), $now);
+    $entry = $state[$ip] ?? ['failed_attempts' => 0, 'last_failed' => 0, 'locked_until' => 0];
+
+    $entry['failed_attempts'] = (int)$entry['failed_attempts'] + 1;
+    $entry['last_failed'] = $now;
+
+    $cooldownSeconds = max(1, min(60, (int)($settings['login_cooldown_minutes'] ?? 1))) * 60;
+
+    if ($entry['failed_attempts'] >= $maxAttempts) {
+        $entry['locked_until'] = $now + $cooldownSeconds;
+        $entry['failed_attempts'] = 0;
+        $remaining = 0;
+    } else {
+        $remaining = $maxAttempts - $entry['failed_attempts'];
+    }
+
+    $state[$ip] = $entry;
+    saveLoginState($state);
+
+    return ['remaining' => $remaining, 'cooldown' => max(0, (int)$entry['locked_until'] - $now)];
+}
+
+function resetFailedLogin(?string $ip = null): void
+{
+    $ip ??= clientIp();
+    $state = cleanupLoginState(loadLoginState());
+    if (isset($state[$ip])) {
+        unset($state[$ip]);
+        saveLoginState($state);
+    }
+}
+
+function cleanupLoginLog(array $entries, ?int $now = null): array
+{
+    $now ??= time();
+    $cutoff = $now - (30 * 86400);
+    $entries = array_values(array_filter($entries, static function ($entry) use ($cutoff) {
+        return is_array($entry) && (int)($entry['time'] ?? 0) >= $cutoff;
+    }));
+    usort($entries, static fn($a, $b) => ((int)($b['time'] ?? 0)) <=> ((int)($a['time'] ?? 0)));
+    return $entries;
+}
+
+function loadLoginLog(): array
+{
+    $entries = cleanupLoginLog(loadJsonFile(LOGIN_LOG_FILE));
+    saveJsonFile(LOGIN_LOG_FILE, $entries);
+    return $entries;
+}
+
+function logLoginEvent(string $result, string $method, ?string $ip = null): void
+{
+    $entries = cleanupLoginLog(loadJsonFile(LOGIN_LOG_FILE));
+    $connectionIp = $ip ?? clientIp();
+    $loggedVisitorIp = $ip ?? visitorIp();
+
+    array_unshift($entries, [
+        'time' => time(),
+        'ip' => $loggedVisitorIp,
+        'connection_ip' => $connectionIp,
+        'method' => $method,
+        'result' => $result,
+    ]);
+    saveJsonFile(LOGIN_LOG_FILE, cleanupLoginLog($entries));
 }
 
 function isLoggedIn(): bool

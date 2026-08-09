@@ -21,7 +21,10 @@ if (!is_dir(DB_DIR)) @mkdir(DB_DIR, 0775, true);
 // Direktlänk: logga in och ta bort nyckeln ur adressfältet.
 if (isset($_GET['key']) && isInstalled()) {
     $key = (string) $_GET['key'];
-    if ($settings['direct_key'] !== '' && hash_equals($settings['direct_key'], $key)) {
+    if (!empty($settings['direct_link_enabled'])
+        && $settings['direct_key'] !== ''
+        && hash_equals($settings['direct_key'], $key)) {
+        logLoginEvent('success', 'direct_link');
         loginUser();
         header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
         exit;
@@ -34,6 +37,7 @@ if (!isInstalled() && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action']
     $password = (string)($_POST['password'] ?? '');
     $password2 = (string)($_POST['password2'] ?? '');
     $setupLanguage = (string)($_POST['language'] ?? $activeLanguage);
+    $username = trim((string)($_POST['username'] ?? ''));
     $availableSetupLanguages = availableLanguages();
     if (!isset($availableSetupLanguages[$setupLanguage])) $setupLanguage = 'en';
     if ($password === '' || strlen($password) < 6) {
@@ -45,7 +49,12 @@ if (!isInstalled() && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action']
     } else {
         $settings['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
         $settings['direct_key'] = randomDirectKey();
+        $settings['direct_link_enabled'] = true;
         $settings['language'] = $setupLanguage;
+        $settings['username'] = $username;
+        $settings['login_protection_enabled'] = true;
+        $settings['login_max_attempts'] = 5;
+        $settings['login_cooldown_minutes'] = 1;
         if (!saveSettings($settings)) {
             $error = t('settings_save_error');
         } else {
@@ -58,13 +67,35 @@ if (!isInstalled() && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action']
 
 // Vanlig login.
 if (isInstalled() && !isLoggedIn() && $_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'login') {
-    $password = (string)($_POST['password'] ?? '');
-    if (password_verify($password, $settings['password_hash'])) {
-        loginUser();
-        header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
-        exit;
+    $remaining = loginCooldownRemaining($settings);
+
+    if ($remaining > 0) {
+        $error = sprintf(t('login_locked'), $remaining);
+    } else {
+        $password = (string)($_POST['password'] ?? '');
+        $username = trim((string)($_POST['username'] ?? ''));
+
+        $configuredUsername = trim((string)($settings['username'] ?? ''));
+        $usernameOk = $configuredUsername === ''
+            || hash_equals($configuredUsername, $username);
+        $passwordOk = password_verify($password, $settings['password_hash']);
+
+        if ($usernameOk && $passwordOk) {
+            resetFailedLogin();
+            logLoginEvent('success', 'password');
+            loginUser();
+            header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
+            exit;
+        }
+
+        logLoginEvent('failed', 'password');
+        $attempt = recordFailedLogin($settings);
+        if ($attempt['cooldown'] > 0) {
+            $error = sprintf(t('login_locked'), $attempt['cooldown']);
+        } else {
+            $error = t('wrong_credentials') . ' ' . sprintf(t('attempts_remaining'), $attempt['remaining']);
+        }
     }
-    $error = t('wrong_password');
 }
 
 // Logout.
@@ -76,7 +107,7 @@ if (isset($_GET['logout'])) {
 
 if (!isInstalled() || !isLoggedIn()) {
     ?><!DOCTYPE html>
-<html lang="<?= h($settings['language'] ?? 'en') ?>"><head>
+<html lang="<?= h($activeLanguage) ?>"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title><?= h(APP_NAME) ?></title><link rel="stylesheet" href="app/css/style.css">
 </head><body class="auth-body">
@@ -94,20 +125,33 @@ if (!isInstalled() || !isLoggedIn()) {
                     <?php endforeach; ?>
                 </select>
             </label>
+            <label><?= h(t('username_optional')) ?>
+                <input type="text" name="username" autocomplete="username">
+            </label>
+
             <label><?= h(t('password')) ?><input type="password" name="password" required autofocus></label>
             <label><?= h(t('repeat_password')) ?><input type="password" name="password2" required></label>
             <button class="btn primary" type="submit"><?= h(t('create_installation')) ?></button>
         </form>
-        <p class="help"><?= h(t('direct_key_created_help')) ?></p>
+        <div class="setup-info success-info">
+            <span class="setup-info-icon">✓</span>
+            <span><?= h(t('direct_key_setup_help')) ?></span>
+        </div>
     <?php else: ?>
         <form method="post" class="auth-form">
             <input type="hidden" name="action" value="login">
-            <label><?= h(t('password')) ?><input type="password" name="password" required autofocus></label>
+            <?php if (trim((string)($settings['username'] ?? '')) !== ''): ?>
+                <label><?= h(t('username')) ?><input type="text" name="username" required autofocus></label>
+                <label><?= h(t('password')) ?><input type="password" name="password" required></label>
+            <?php else: ?>
+                <label><?= h(t('password')) ?><input type="password" name="password" required autofocus></label>
+            <?php endif; ?>
             <button class="btn primary" type="submit"><?= h(t('login')) ?></button>
         </form>
     <?php endif; ?>
     <div class="auth-version">v<?= h(APP_VERSION) ?></div>
 </div>
+<script src="app/js/app.js"></script>
 </body></html><?php
     exit;
 }
@@ -140,10 +184,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!saveSettings($settings)) throw new RuntimeException(t('password_save_error'));
             $message = t('password_changed');
         }
+        if ($action === 'save_direct_link') {
+            $settings['direct_link_enabled'] = isset($_POST['direct_link_enabled']);
+            if (!saveSettings($settings)) throw new RuntimeException(t('settings_save_error'));
+            $message = t('direct_link_setting_saved');
+        }
         if ($action === 'new_direct_key') {
             $settings['direct_key'] = randomDirectKey();
             if (!saveSettings($settings)) throw new RuntimeException(t('key_save_error'));
             $message = t('key_changed');
+        }
+        if ($action === 'save_security') {
+            $username = trim((string)($_POST['username'] ?? ''));
+            $protectionEnabled = isset($_POST['login_protection_enabled']);
+            $maxAttempts = (int)($_POST['login_max_attempts'] ?? 5);
+            $cooldownMinutes = (int)($_POST['login_cooldown_minutes'] ?? 1);
+
+            if ($maxAttempts < 1 || $maxAttempts > 20) throw new RuntimeException(t('attempts_range'));
+            if ($cooldownMinutes < 1 || $cooldownMinutes > 60) throw new RuntimeException(t('cooldown_range'));
+
+            $settings['username'] = $username;
+            $settings['login_protection_enabled'] = $protectionEnabled;
+            $settings['login_max_attempts'] = $maxAttempts;
+            $settings['login_cooldown_minutes'] = $cooldownMinutes;
+
+            if (!saveSettings($settings)) throw new RuntimeException(t('settings_save_error'));
+            $message = t('security_saved');
         }
         if ($action === 'change_language') {
             $language = (string)($_POST['language'] ?? 'en');
@@ -176,6 +242,7 @@ $mode = (string)($_GET['action'] ?? 'view');
 $isNew = $mode === 'new';
 $isEdit = $mode === 'edit' && $current;
 $settingsOpen = $mode === 'settings';
+$loginLogOpen = $mode === 'login_log';
 
 if (isset($_GET['saved'])) $message = t('saved');
 if (isset($_GET['deleted'])) $message = t('deleted');
@@ -238,7 +305,47 @@ if (isset($_GET['deleted'])) $message = t('deleted');
 <?php if ($error): ?><div class="alert error"><?= h($error) ?></div><?php endif; ?>
 <?php if ($message): ?><div class="alert success" id="flashMessage"><?= h($message) ?></div><?php endif; ?>
 
-<?php if ($settingsOpen): ?>
+<?php if ($loginLogOpen):
+    $loginEntries = loadLoginLog();
+?>
+    <div class="note-header">
+        <div>
+            <div class="note-category"><?= h(t('security')) ?></div>
+            <h1 class="note-title"><?= h(t('login_activity')) ?></h1>
+        </div>
+        <a class="btn" href="?action=settings">← <?= h(t('back_to_settings')) ?></a>
+    </div>
+    <section class="note-card">
+        <p class="help"><?= h(t('login_activity_retention')) ?></p>
+        <p class="help"><?= h(t('proxy_ip_help')) ?></p>
+        <?php if (!$loginEntries): ?>
+            <p><?= h(t('no_login_activity')) ?></p>
+        <?php else: ?>
+            <div class="table-wrap">
+                <table class="login-table">
+                    <thead><tr>
+                        <th><?= h(t('date_time')) ?></th>
+                        <th><?= h(t('ip_address')) ?></th>
+                        <th><?= h(t('connection_ip')) ?></th>
+                        <th><?= h(t('method')) ?></th>
+                        <th><?= h(t('result')) ?></th>
+                    </tr></thead>
+                    <tbody>
+                    <?php foreach ($loginEntries as $entry): ?>
+                        <tr>
+                            <td><?= h(date('Y-m-d H:i:s', (int)($entry['time'] ?? 0))) ?></td>
+                            <td><?= h((string)($entry['ip'] ?? '')) ?></td>
+                            <td><?= h((string)($entry['connection_ip'] ?? ($entry['ip'] ?? ''))) ?></td>
+                            <td><?= h(($entry['method'] ?? '') === 'direct_link' ? t('direct_link_method') : t('password_method')) ?></td>
+                            <td><span class="login-result <?= ($entry['result'] ?? '') === 'success' ? 'ok' : 'fail' ?>"><?= h(($entry['result'] ?? '') === 'success' ? t('success') : t('failed')) ?></span></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </section>
+<?php elseif ($settingsOpen): ?>
     <div class="note-header"><div><div class="note-category">Installation</div><h1 class="note-title"><?= h(t('settings')) ?></h1></div></div>
     <section class="note-card settings-grid">
         <div class="settings-section"><h2><?= h(t('change_password')) ?></h2>
@@ -252,11 +359,56 @@ if (isset($_GET['deleted'])) $message = t('deleted');
         </div>
         <div class="settings-section"><h2><?= h(t('direct_link')) ?></h2>
             <p class="help"><?= h(t('direct_help')) ?></p>
-            <div class="copy-row"><input id="directLink" readonly value="<?= h(directLink($settings['direct_key'])) ?>"><button class="btn" type="button" id="copyDirectLink"><?= h(t('copy')) ?></button></div>
-            <form method="post" onsubmit="return confirm(<?= h(json_encode(t('old_key_warning'), JSON_UNESCAPED_UNICODE)) ?>);">
-                <input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>"><input type="hidden" name="action" value="new_direct_key">
-                <button class="btn" type="submit"><?= h(t('new_direct_key')) ?></button>
+            <p class="help"><?= h(t('direct_key_length_help')) ?></p>
+            <form method="post" class="settings-form compact-form">
+                <input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>">
+                <input type="hidden" name="action" value="save_direct_link">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="direct_link_enabled" value="1" <?= !empty($settings['direct_link_enabled']) ? 'checked' : '' ?>>
+                    <span><?= h(t('enable_direct_link')) ?></span>
+                </label>
+                <button class="btn primary" type="submit"><?= h(t('save')) ?></button>
             </form>
+            <?php if (!empty($settings['direct_link_enabled'])): ?>
+                <div class="copy-row"><input id="directLink" readonly value="<?= h(directLink($settings['direct_key'])) ?>"><button class="btn" type="button" id="copyDirectLink"><?= h(t('copy')) ?></button></div>
+                <form method="post" onsubmit="return confirm(<?= h(json_encode(t('old_key_warning'), JSON_UNESCAPED_UNICODE)) ?>);">
+                    <input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>"><input type="hidden" name="action" value="new_direct_key">
+                    <button class="btn" type="submit"><?= h(t('new_direct_key')) ?></button>
+                </form>
+            <?php else: ?>
+                <p class="help"><?= h(t('direct_link_disabled')) ?></p>
+            <?php endif; ?>
+        </div>
+        <div class="settings-section"><h2><?= h(t('security')) ?></h2>
+            <form method="post" class="settings-form">
+                <input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>">
+                <input type="hidden" name="action" value="save_security">
+
+                <label><?= h(t('username_optional')) ?>
+                    <input type="text" name="username" value="<?= h((string)($settings['username'] ?? '')) ?>" autocomplete="username">
+                </label>
+                <p class="help"><?= h(t('username_help')) ?></p>
+
+                <hr class="settings-divider">
+
+                <label class="checkbox-label">
+                    <input type="checkbox" name="login_protection_enabled" value="1" <?= !empty($settings['login_protection_enabled']) ? 'checked' : '' ?>>
+                    <span><?= h(t('enable_login_protection')) ?></span>
+                </label>
+                <label><?= h(t('failed_attempts')) ?>
+                    <input type="number" name="login_max_attempts" min="1" max="20" value="<?= h((string)$settings['login_max_attempts']) ?>" required>
+                </label>
+                <label><?= h(t('cooldown_minutes')) ?>
+                    <input type="number" name="login_cooldown_minutes" min="1" max="60" value="<?= h((string)$settings['login_cooldown_minutes']) ?>" required>
+                </label>
+                <p class="help"><?= h(t('login_protection_help')) ?></p>
+                <button class="btn primary" type="submit"><?= h(t('save_security')) ?></button>
+            </form>
+            <div class="security-log-link">
+                <h3><?= h(t('login_activity')) ?></h3>
+                <p class="help"><?= h(t('login_activity_help')) ?></p>
+                <a class="btn primary" href="?action=login_log"><?= h(t('view_login_activity')) ?></a>
+            </div>
         </div>
         <div class="settings-section"><h2><?= h(t('language')) ?></h2>
             <form method="post" class="settings-form">

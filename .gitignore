@@ -1,8 +1,7 @@
-# FlatNote installation settings
 app/settings.php
-
-# User notes
 db/*.md
-
-# Keep the empty db directory in Git
 !db/.gitkeep
+
+# Runtime login protection state
+app/runtime/*.json
+!app/runtime/.gitkeep

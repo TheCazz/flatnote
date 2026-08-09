@@ -123,3 +123,5 @@ if (setupLanguage) {
         window.location.href = url.toString();
     });
 }
+
+
